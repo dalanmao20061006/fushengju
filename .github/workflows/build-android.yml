@@ -3,6 +3,7 @@ name: build-llama-android
 # 浮生居 POC · 从 llama.cpp 官方源码交叉编译 Android arm64
 # 产物：静态自包含的 llama-cli / llama-bench（可直接 adb 跑）
 #       自包含的前提是 GGML_OPENMP=OFF；开着 OpenMP 会 DT_NEEDED libomp.so，Android 系统没有这个库
+#       指令集按 ARMv8.2 + dotprod + i8mm 编译（8 Gen 3 支持）；代价是产物不能跑在老 ARMv8.0 机器上
 #       + 共享库版 libllama.so / libggml*.so（给后续 App JNI 用）
 #
 # 用法：把本目录推到一个空 GitHub 仓库 → Actions → 选 "build-llama-android" → Run workflow
@@ -59,6 +60,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm \
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DGGML_OPENMP=OFF \
@@ -125,6 +127,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON \
             -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm \
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DGGML_OPENMP=OFF \
