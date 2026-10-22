@@ -1,0 +1,151 @@
+name: build-llama-android
+
+# 浮生居 POC · 从 llama.cpp 官方源码交叉编译 Android arm64
+# 产物：静态自包含的 llama-cli / llama-bench（可直接 adb 跑）
+#       + 共享库版 libllama.so / libggml*.so（给后续 App JNI 用）
+#
+# 用法：把本目录推到一个空 GitHub 仓库 → Actions → 选 "build-llama-android" → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: "llama.cpp ref（tag / 分支 / commit）"
+        required: true
+        default: "master"
+      ndk_version:
+        description: "Android NDK 版本"
+        required: true
+        default: "r27c"
+      with_opencl:
+        description: "是否编译 OpenCL（Adreno）后端"
+        type: boolean
+        default: false
+
+jobs:
+  cli:
+    name: CLI（静态，自包含）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.llama_ref }}
+          fetch-depth: 1
+
+      - name: Install NDK ${{ inputs.ndk_version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+          echo "NDK 版本：${{ inputs.ndk_version }}"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "${{ inputs.with_opencl }}" = "true" ]; then
+            EXTRA="-DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON"
+          fi
+          cmake -B build-cli -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            $EXTRA
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake --build build-cli --target llama-cli llama-bench -j"$(nproc)"
+
+      - name: Strip & package
+        run: |
+          set -euo pipefail
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          mkdir -p dist
+          cp build-cli/bin/llama-cli build-cli/bin/llama-bench dist/
+          "$STRIP" --strip-all dist/llama-cli dist/llama-bench
+          echo "--- file ---"
+          file dist/* || true
+          echo "--- 依赖（静态构建应为空）---"
+          "$READELF" -d dist/llama-cli || true
+          ls -lh dist
+          (cd dist && sha256sum llama-cli llama-bench > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-android-arm64-cli
+          path: dist/
+          if-no-files-found: error
+
+  shared:
+    name: 共享库（给 App JNI 用）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.llama_ref }}
+          fetch-depth: 1
+
+      - name: Install NDK ${{ inputs.ndk_version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "${{ inputs.with_opencl }}" = "true" ]; then
+            EXTRA="-DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON"
+          fi
+          cmake -B build-so -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            $EXTRA
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake --build build-so --target llama -j"$(nproc)"
+
+      - name: Strip & package
+        run: |
+          set -euo pipefail
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          mkdir -p dist/lib dist/include
+          cp build-so/bin/*.so dist/lib/ || cp build-so/*.so dist/lib/
+          "$STRIP" --strip-unneeded dist/lib/*.so || true
+          cp include/*.h dist/include/ 2>/dev/null || true
+          cp ggml/include/*.h dist/include/ 2>/dev/null || true
+          file dist/lib/*.so
+          ls -lh dist/lib
+          (cd dist && sha256sum lib/*.so > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-android-arm64-shared
+          path: dist/
+          if-no-files-found: error
