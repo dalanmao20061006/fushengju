@@ -2,6 +2,7 @@ name: build-llama-android
 
 # 浮生居 POC · 从 llama.cpp 官方源码交叉编译 Android arm64
 # 产物：静态自包含的 llama-cli / llama-bench（可直接 adb 跑）
+#       自包含的前提是 GGML_OPENMP=OFF；开着 OpenMP 会 DT_NEEDED libomp.so，Android 系统没有这个库
 #       + 共享库版 libllama.so / libggml*.so（给后续 App JNI 用）
 #
 # 用法：把本目录推到一个空 GitHub 仓库 → Actions → 选 "build-llama-android" → Run workflow
@@ -50,6 +51,7 @@ jobs:
           if [ "${{ inputs.with_opencl }}" = "true" ]; then
             EXTRA="-DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON"
           fi
+          # 关掉 OpenMP：否则产物会 DT_NEEDED libomp.so，Android 系统不带这个库，adb 直接跑和 JNI 加载都会失败
           cmake -B build-cli -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
@@ -59,6 +61,7 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_OPENMP=OFF \
             $EXTRA
 
       - name: Build
@@ -114,6 +117,7 @@ jobs:
           if [ "${{ inputs.with_opencl }}" = "true" ]; then
             EXTRA="-DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON"
           fi
+          # 关掉 OpenMP：否则产物会 DT_NEEDED libomp.so，Android 系统不带这个库，adb 直接跑和 JNI 加载都会失败
           cmake -B build-so -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
@@ -123,6 +127,7 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
+            -DGGML_OPENMP=OFF \
             $EXTRA
 
       - name: Build
