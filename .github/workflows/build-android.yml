@@ -63,13 +63,14 @@ jobs:
             -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm \
             -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
             -DGGML_OPENMP=OFF \
             $EXTRA
 
       - name: Build
         run: |
           set -euo pipefail
-          cmake --build build-cli --target llama-cli llama-bench -j"$(nproc)"
+          cmake --build build-cli --target llama-cli llama-bench llama-server -j"$(nproc)"
 
       - name: Strip & package
         run: |
@@ -77,14 +78,14 @@ jobs:
           STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           mkdir -p dist
-          cp build-cli/bin/llama-cli build-cli/bin/llama-bench dist/
-          "$STRIP" --strip-all dist/llama-cli dist/llama-bench
+          cp build-cli/bin/llama-cli build-cli/bin/llama-bench build-cli/bin/llama-server dist/
+          "$STRIP" --strip-all dist/llama-cli dist/llama-bench dist/llama-server
           echo "--- file ---"
           file dist/* || true
           echo "--- 依赖（静态构建应为空）---"
-          "$READELF" -d dist/llama-cli || true
+          for b in llama-cli llama-bench llama-server; do echo "== $b =="; "$READELF" -d "dist/$b" || true; done
           ls -lh dist
-          (cd dist && sha256sum llama-cli llama-bench > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          (cd dist && sha256sum llama-cli llama-bench llama-server > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
