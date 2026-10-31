@@ -80,6 +80,8 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_SERVER=ON \
             -DCMAKE_PREFIX_PATH=/tmp/spirv-prefix \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -DSPIRV-Headers_DIR=/tmp/spirv-prefix/lib/cmake/SPIRV-Headers \
             -DVulkan_INCLUDE_DIR="$TC/sysroot/usr/include" \
             -DVulkan_LIBRARY="$TC/sysroot/usr/lib/aarch64-linux-android/28/libvulkan.so" \
             -Dglslc_EXECUTABLE="$(command -v glslc)" \
