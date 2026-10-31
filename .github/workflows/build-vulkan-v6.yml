@@ -1,0 +1,122 @@
+name: build-llama-android-vulkan-v6
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: "llama.cpp ref"
+        required: true
+        default: "master"
+      ndk_version:
+        description: "Android NDK 版本"
+        required: true
+        default: "r27c"
+
+jobs:
+  vulkan:
+    name: Vulkan llama-server (arm64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.llama_ref }}
+          fetch-depth: 1
+
+      - name: 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslc
+          glslc --version
+
+      - name: 安装 NDK
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+
+      - name: 准备外部头文件
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/spirv-headers
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
+          ls /tmp/spirv-headers/include/spirv/unified1/spirv.h
+          ls /tmp/vulkan-headers/include/vulkan/vulkan.hpp
+          mkdir -p /tmp/spirv-prefix/lib/cmake/SPIRV-Headers
+          printf '%s\n' 'if(NOT TARGET SPIRV-Headers::SPIRV-Headers)' '  add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)' '  set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES' '    INTERFACE_INCLUDE_DIRECTORIES "/tmp/spirv-headers/include")' 'endif()' 'set(SPIRV-Headers_FOUND TRUE)' > /tmp/spirv-prefix/lib/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
+          printf '%s\n' 'set(PACKAGE_VERSION "1.0.0")' 'set(PACKAGE_VERSION_COMPATIBLE TRUE)' 'set(PACKAGE_VERSION_EXACT FALSE)' > /tmp/spirv-prefix/lib/cmake/SPIRV-Headers/SPIRV-HeadersConfigVersion.cmake
+          echo "--- 配置文件 ---"
+          cat /tmp/spirv-prefix/lib/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake
+
+      - name: Configure
+        run: |
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          cmake -B build-vk -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm \
+            -DGGML_VULKAN=ON \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DCMAKE_PREFIX_PATH=/tmp/spirv-prefix \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+            -DSPIRV-Headers_DIR=/tmp/spirv-prefix/lib/cmake/SPIRV-Headers \
+            -DVulkan_INCLUDE_DIR=/tmp/vulkan-headers/include \
+            -DVulkan_LIBRARY="$TC/sysroot/usr/lib/aarch64-linux-android/28/libvulkan.so" \
+            -Dglslc_EXECUTABLE="$(command -v glslc)" \
+            -DCMAKE_CXX_FLAGS=-I/tmp/vulkan-headers/include \
+            2>&1 | tee configure.log
+
+      - name: Configure 失败打印
+        if: failure()
+        run: tail -80 configure.log || true
+
+      - name: Build
+        if: success()
+        run: cmake --build build-vk --target llama-server -j"$(nproc)" 2>&1 | tee build-vk.log
+
+      - name: 打包（自动找二进制）
+        if: success()
+        run: |
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          echo "=== 找 llama-server ==="
+          find build-vk -type f -name "llama-server*" -print
+          BIN=$(find build-vk -type f -name "llama-server" | head -1)
+          if [ -z "$BIN" ]; then BIN=$(find build-vk -type f -name "llama-server*" ! -name "*.so" | head -1); fi
+          echo "选中的二进制：$BIN"
+          if [ -z "$BIN" ]; then echo "!! 找不到 llama-server"; ls -R build-vk | head -60; exit 1; fi
+          mkdir -p dist
+          cp "$BIN" dist/libllamaserver_vk.so
+          echo "=== 收集 .so ==="
+          find build-vk -type f -name "*.so" -print
+          for f in $(find build-vk -type f -name "*.so"); do cp "$f" dist/ || true; done
+          "$STRIP" --strip-all dist/* 2>/dev/null || true
+          echo "=== 产物 ==="
+          ls -lh dist/
+          echo "=== DT_NEEDED ==="
+          for f in dist/*; do echo "--- $f"; "$READELF" -d "$f" | grep NEEDED || true; done
+
+      - name: 上传
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-vulkan-arm64-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: 失败也传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vk-logs-${{ github.run_number }}
+          path: |
+            configure.log
+            build-vk.log
