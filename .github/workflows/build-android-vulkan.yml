@@ -1,0 +1,102 @@
+name: build-llama-android-vulkan
+
+# 浮生居 · 在原有 POC 工作流上加一条 Vulkan 分支
+# 与 build-android.yml 的区别：
+#   1. 安装 glslc（Vulkan shader 编译器），否则 GGML_VULKAN 配置阶段就失败
+#   2. -DGGML_VULKAN=ON
+#   3. 额外打包 libggml-vulkan.so 与 libggml-base.so / libggml-cpu.so / libllama.so
+#   4. 用 llvm-readelf 打印 DT_NEEDED，确认没有偷偷依赖 Android 系统没有的库
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: "llama.cpp ref"
+        required: true
+        default: "master"
+      ndk_version:
+        description: "Android NDK 版本"
+        required: true
+        default: "r27c"
+      vulkan_offload_layers:
+        description: "GPU 卸载层数（测试时先用 99；不认就降到 20）"
+        required: true
+        default: "99"
+
+jobs:
+  vulkan:
+    name: Vulkan 版 llama-server（arm64）
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.llama_ref }}
+          fetch-depth: 1
+
+      - name: 安装宿主依赖（glslc 关键）
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslc
+          glslc --version
+
+      - name: 安装 NDK
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+
+      - name: Configure（Vulkan ON）
+        run: |
+          set -euo pipefail
+          cmake -B build-vk -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm \
+            -DGGML_VULKAN=ON \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=ON
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake --build build-vk --target llama-server -j"$(nproc)" 2>&1 | tee build-vk.log
+
+      - name: 打包
+        run: |
+          set -euo pipefail
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          mkdir -p dist
+          cp build-vk/bin/llama-server dist/libllamaserver_vk.so
+          for f in build-vk/bin/*.so; do [ -f "$f" ] && cp "$f" dist/ || true; done
+          "$STRIP" --strip-all dist/* 2>/dev/null || true
+          echo "=== 产物 ==="
+          ls -lh dist/
+          echo "=== DT_NEEDED（必须只有 libc/libm/libdl/liblog/libandroid/libvulkan 之类） ==="
+          for f in dist/*; do echo "--- $f"; "$READELF" -d "$f" | grep NEEDED || true; done
+
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-vulkan-arm64-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: 失败也传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-vk-log-${{ github.run_number }}
+          path: build-vk.log
