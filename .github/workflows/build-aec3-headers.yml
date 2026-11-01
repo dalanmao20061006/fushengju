@@ -1,0 +1,75 @@
+name: build-aec3-with-headers
+
+on:
+  workflow_dispatch:
+    inputs:
+      ndk_version:
+        description: "Android NDK 版本"
+        required: true
+        default: "r27c"
+
+jobs:
+  aec3:
+    name: AEC3 + 头文件
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build meson pkg-config zip
+
+      - name: 安装 NDK
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+
+      - name: 拉源码
+        run: |
+          git clone --depth 1 https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git src
+
+      - name: 交叉编译配置
+        run: |
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cat > "$GITHUB_WORKSPACE/android-cross.ini" <<EOF
+          [binaries]
+          c = '$TC/aarch64-linux-android28-clang'
+          cpp = '$TC/aarch64-linux-android28-clang++'
+          ar = '$TC/llvm-ar'
+          strip = '$TC/llvm-strip'
+          pkgconfig = 'pkg-config'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+          EOF
+
+      - name: 编译
+        run: |
+          meson setup build src --cross-file "$GITHUB_WORKSPACE/android-cross.ini" \
+            --default-library=shared --buildtype=release \
+            -Dprefix="$GITHUB_WORKSPACE/out"
+          ninja -C build -j"$(nproc)"
+          ninja -C build install
+
+      - name: 打包（库 + 头文件）
+        run: |
+          mkdir -p dist
+          find out -name "*.so*" -exec cp -v {} dist/ \;
+          mkdir -p dist/include
+          cp -rv out/include/* dist/include/ || true
+          cd src
+          find . -name "*.h" -path "*audio_processing*" -exec cp --parents {} "$GITHUB_WORKSPACE/dist/include/" \; || true
+          cd "$GITHUB_WORKSPACE"
+          zip -r aec3-bundle.zip dist
+          ls -lh aec3-bundle.zip
+
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: aec3-bundle
+          path: aec3-bundle.zip
