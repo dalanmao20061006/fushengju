@@ -1,0 +1,85 @@
+name: build-aec-jni-v5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build libfsjaec.so
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: 依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build meson pkg-config
+
+      - name: 安装 NDK
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "NDK=$RUNNER_TEMP/android-ndk-r27c" >> "$GITHUB_ENV"
+
+      - name: 拉 webrtc 源码
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git src
+
+      - name: 交叉编译配置
+        run: |
+          set -euo pipefail
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          printf '%s\n' "[binaries]" "c = '$TC/aarch64-linux-android28-clang'" "cpp = '$TC/aarch64-linux-android28-clang++'" "ar = '$TC/llvm-ar'" "strip = '$TC/llvm-strip'" "" "[host_machine]" "system = 'android'" "cpu_family = 'aarch64'" "cpu = 'aarch64'" "endian = 'little'" > android-cross.ini
+
+      - name: 编译并安装 webrtc
+        run: |
+          set -euo pipefail
+          meson setup build src --cross-file android-cross.ini --default-library=shared --buildtype=release -Dprefix="$GITHUB_WORKSPACE/out"
+          ninja -C build -j"$(nproc)"
+          ninja -C build install
+          echo "=== 头文件位置 ==="
+          find out/include -name "audio_processing.h" | head -5
+
+      - name: 写入 JNI 源码
+        run: |
+          set -euo pipefail
+          mkdir -p jni
+          printf '%s' 'Ly8g5rWu55Sf5bGFIMK3IFdlYlJUQyBBRUMzIOeahCBKTkkg5YyF6KOFCi8vIEphdmEg5Y+q55yL5Yiw5Zub5Liq5pa55rOV77yaY3JlYXRlIC8gc2V0UmVmZXJlbmNlIC8gcHJvY2VzcyAvIHJlbGVhc2UKI2luY2x1ZGUgPGpuaS5oPgojaW5jbHVkZSA8Y3N0cmluZz4KI2luY2x1ZGUgPGNzdGRpbnQ+CiNpbmNsdWRlIDx2ZWN0b3I+CgojaW5jbHVkZSAiYXBpL2F1ZGlvL2F1ZGlvX3Byb2Nlc3NpbmcuaCIKI2luY2x1ZGUgImFwaS9zY29wZWRfcmVmcHRyLmgiCgpzdGF0aWMgcnRjOjpzY29wZWRfcmVmcHRyPHdlYnJ0Yzo6QXVkaW9Qcm9jZXNzaW5nPiBnX2FwbTsKc3RhdGljIGludCBnX3JhdGUgPSAxNjAwMDsKc3RhdGljIHN0ZDo6dmVjdG9yPGludDE2X3Q+IGdfb3V0OwoKc3RhdGljIGJvb2wgZW5zdXJlKGludCByYXRlKSB7CiAgICBpZiAoZ19hcG0gJiYgZ19yYXRlID09IHJhdGUpIHJldHVybiB0cnVlOwogICAgd2VicnRjOjpBdWRpb1Byb2Nlc3Npbmc6OkNvbmZpZyBjZmc7CiAgICBjZmcuZWNob19jYW5jZWxsZXIuZW5hYmxlZCA9IHRydWU7CiAgICBjZmcuZWNob19jYW5jZWxsZXIubW9iaWxlX21vZGUgPSBmYWxzZTsKICAgIGNmZy5ub2lzZV9zdXBwcmVzc2lvbi5lbmFibGVkID0gdHJ1ZTsKICAgIGNmZy5oaWdoX3Bhc3NfZmlsdGVyLmVuYWJsZWQgPSB0cnVlOwogICAgY2ZnLmdhaW5fY29udHJvbGxlcjEuZW5hYmxlZCA9IGZhbHNlOwogICAgY2ZnLmdhaW5fY29udHJvbGxlcjIuZW5hYmxlZCA9IGZhbHNlOwogICAgY2ZnLnRyYW5zaWVudF9zdXBwcmVzc2lvbi5lbmFibGVkID0gZmFsc2U7CgogICAgZ19hcG0gPSB3ZWJydGM6OkF1ZGlvUHJvY2Vzc2luZ0J1aWxkZXIoKS5TZXRDb25maWcoY2ZnKS5DcmVhdGUoKTsKICAgIGlmICghZ19hcG0pIHJldHVybiBmYWxzZTsKCiAgICAvLyDmlrAgQVBJ77yaUHJvY2Vzc2luZ0NvbmZpZyDmmK/ni6znq4vnsbvvvIzlm5vkuKrmtYHpgJrov4ci5Ye95pWw6LCD55SoIuWPluW8leeUqOWGjei1i+WAvAogICAgd2VicnRjOjpQcm9jZXNzaW5nQ29uZmlnIHBjOwogICAgcGMuaW5wdXRfc3RyZWFtKCkgPSB3ZWJydGM6OlN0cmVhbUNvbmZpZyhyYXRlLCAxKTsKICAgIHBjLm91dHB1dF9zdHJlYW0oKSA9IHdlYnJ0Yzo6U3RyZWFtQ29uZmlnKHJhdGUsIDEpOwogICAgcGMucmV2ZXJzZV9pbnB1dF9zdHJlYW0oKSA9IHdlYnJ0Yzo6U3RyZWFtQ29uZmlnKHJhdGUsIDEpOwogICAgcGMucmV2ZXJzZV9vdXRwdXRfc3RyZWFtKCkgPSB3ZWJydGM6OlN0cmVhbUNvbmZpZyhyYXRlLCAxKTsKICAgIGlmIChnX2FwbS0+SW5pdGlhbGl6ZShwYykgIT0gMCkgeyBnX2FwbSA9IG51bGxwdHI7IHJldHVybiBmYWxzZTsgfQogICAgZ19hcG0tPkFwcGx5Q29uZmlnKGNmZyk7CiAgICBnX3JhdGUgPSByYXRlOwogICAgcmV0dXJuIHRydWU7Cn0KCmV4dGVybiAiQyIgSk5JRVhQT1JUIGpib29sZWFuIEpOSUNBTEwKSmF2YV9jb21fZnVzaGVuZ2p1X2FwcF9BZWNCcmlkZ2VfY3JlYXRlKEpOSUVudiosIGpjbGFzcywgamludCByYXRlKSB7CiAgICBnX2FwbSA9IG51bGxwdHI7CiAgICBnX3JhdGUgPSAwOwogICAgcmV0dXJuIGVuc3VyZShyYXRlKSA/IEpOSV9UUlVFIDogSk5JX0ZBTFNFOwp9CgovLyDlj4LogIPkv6Hlj7fvvJrlpbnmraPlnKjmkq3nmoTlo7Dpn7PvvIjlkIzkuIDkuKogMTBtcyDluKfvvIkKZXh0ZXJuICJDIiBKTklFWFBPUlQgdm9pZCBKTklDQUxMCkphdmFfY29tX2Z1c2hlbmdqdV9hcHBfQWVjQnJpZGdlX3NldFJlZmVyZW5jZShKTklFbnYqIGVudiwgamNsYXNzLCBqc2hvcnRBcnJheSBwY20sIGppbnQgZnJhbWVzKSB7CiAgICBpZiAoIWdfYXBtKSByZXR1cm47CiAgICBqc2hvcnQqIHAgPSBlbnYtPkdldFNob3J0QXJyYXlFbGVtZW50cyhwY20sIG51bGxwdHIpOwogICAgaWYgKCFwKSByZXR1cm47CiAgICBzdGQ6OnZlY3RvcjxpbnQxNl90PiBkc3QoKHNpemVfdCkgZnJhbWVzKTsKICAgIHdlYnJ0Yzo6U3RyZWFtQ29uZmlnIGNmZyhnX3JhdGUsIDEpOwogICAgZ19hcG0tPlByb2Nlc3NSZXZlcnNlU3RyZWFtKHAsIGNmZywgY2ZnLCBkc3QuZGF0YSgpKTsKICAgIGVudi0+UmVsZWFzZVNob3J0QXJyYXlFbGVtZW50cyhwY20sIHAsIEpOSV9BQk9SVCk7Cn0KCi8vIOi/keerr++8mum6puWFi+mjjui+k+WFpSDihpIg5raI5o6J5aW555qE5aOw6Z+zIOKGkiDov5Tlm57lubLlh4Dpn7PpopEKZXh0ZXJuICJDIiBKTklFWFBPUlQganNob3J0QXJyYXkgSk5JQ0FMTApKYXZhX2NvbV9mdXNoZW5nanVfYXBwX0FlY0JyaWRnZV9wcm9jZXNzKEpOSUVudiogZW52LCBqY2xhc3MsIGpzaG9ydEFycmF5IHBjbSwgamludCBmcmFtZXMpIHsKICAgIGlmICghZ19hcG0pIHJldHVybiBwY207CiAgICBqc2hvcnQqIHAgPSBlbnYtPkdldFNob3J0QXJyYXlFbGVtZW50cyhwY20sIG51bGxwdHIpOwogICAgaWYgKCFwKSByZXR1cm4gcGNtOwogICAgZ19vdXQuYXNzaWduKChzaXplX3QpIGZyYW1lcywgMCk7CiAgICB3ZWJydGM6OlN0cmVhbUNvbmZpZyBjZmcoZ19yYXRlLCAxKTsKICAgIGdfYXBtLT5Qcm9jZXNzU3RyZWFtKHAsIGNmZywgY2ZnLCBnX291dC5kYXRhKCkpOwogICAgZW52LT5SZWxlYXNlU2hvcnRBcnJheUVsZW1lbnRzKHBjbSwgcCwgSk5JX0FCT1JUKTsKCiAgICBqc2hvcnRBcnJheSByZXMgPSBlbnYtPk5ld1Nob3J0QXJyYXkoZnJhbWVzKTsKICAgIGVudi0+U2V0U2hvcnRBcnJheVJlZ2lvbihyZXMsIDAsIGZyYW1lcywgZ19vdXQuZGF0YSgpKTsKICAgIHJldHVybiByZXM7Cn0KCmV4dGVybiAiQyIgSk5JRVhQT1JUIHZvaWQgSk5JQ0FMTApKYXZhX2NvbV9mdXNoZW5nanVfYXBwX0FlY0JyaWRnZV9yZWxlYXNlKEpOSUVudiosIGpjbGFzcykgewogICAgZ19hcG0gPSBudWxscHRyOwogICAgZ19yYXRlID0gMDsKICAgIGdfb3V0LmNsZWFyKCk7Cn0K' | base64 -d > jni/aec_jni.cpp
+          echo "大小：$(wc -c < jni/aec_jni.cpp)"
+          grep -n "include" jni/aec_jni.cpp | head -5
+
+      - name: 编译 libfsjaec.so
+        run: |
+          set -euo pipefail
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p dist
+          set +e
+          "$TC/aarch64-linux-android28-clang++" -std=c++17 -fPIC -shared -O2 -I out/include/webrtc-audio-processing-2 -I out/include jni/aec_jni.cpp -L out/lib -lwebrtc-audio-processing-2 -llog -landroid -o dist/libfsjaec.so > jni-build.log 2>&1
+          RC=$?
+          set -e
+          echo "编译退出码：$RC"
+          if [ $RC -ne 0 ]; then
+            echo "===== 错误摘要 ====="
+            grep -n "error:" jni-build.log | head -20 || true
+            echo "===== 日志尾部 ====="
+            tail -30 jni-build.log || true
+            exit 1
+          fi
+          ls -lh dist/
+
+      - name: 上传
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fsjaec-arm64
+          path: dist/
+          if-no-files-found: error
+
+      - name: 失败也传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jni-build-log
+          path: jni-build.log
